@@ -3,40 +3,40 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>손동작 스네이크</title>
+    <title>Nebula Beat Rift</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <div class="scene scene--nebula" aria-hidden="true"></div>
     <div class="scene scene--grid" aria-hidden="true"></div>
-    <div class="scene scene--glow" aria-hidden="true"></div>
+    <div class="scene scene--scan" aria-hidden="true"></div>
     <main class="app">
-      <section class="panel" aria-label="Hand gesture snake game">
+      <section class="panel" aria-label="Hand gesture rhythm game">
         <header class="panel__header">
           <div>
-            <p class="eyebrow">Nebula Motion Console</p>
-            <h1>손동작 스네이크</h1>
-            <p class="subtitle">카메라 앞에서 손가락 방향을 바꾸면 스네이크가 따라 움직입니다.</p>
+            <p class="eyebrow">Nebula Beat Rift</p>
+            <h1>핸드 리듬 포털</h1>
+            <p class="subtitle">비트에 맞춰 손 방향과 제스처를 입력하는 SF 리듬게임입니다.</p>
           </div>
-          <div class="scoreboard" aria-live="polite">
-            <span class="scoreboard__label">Score</span>
-            <span id="score" class="scoreboard__value">0</span>
+          <div class="hud">
+            <div class="hud__card"><span class="hud__label">Score</span><strong id="score" class="hud__value">0</strong></div>
+            <div class="hud__card"><span class="hud__label">Combo</span><strong id="combo" class="hud__value">0</strong></div>
+            <div class="hud__card"><span class="hud__label">Accuracy</span><strong id="accuracy" class="hud__value">100%</strong></div>
           </div>
         </header>
 
-        <section class="camera-layout" aria-label="Camera and detection panel">
+        <section class="camera-layout" aria-label="Camera and control panel">
           <div class="camera-shell">
             <video id="camera" class="camera-feed" autoplay playsinline muted></video>
             <canvas id="camera-overlay" class="camera-overlay"></canvas>
             <div class="camera-badge">
-              <span class="camera-badge__label">인식 방향</span>
+              <span class="camera-badge__label">현재 입력</span>
               <strong id="gesture-label">대기 중</strong>
-              <span id="handedness-label" class="camera-badge__meta">손 정보 대기 중</span>
+              <span id="camera-status" class="camera-badge__meta">카메라를 켜면 손 입력을 감지합니다.</span>
             </div>
           </div>
 
-          <div class="camera-info">
-            <button id="camera-button" class="button" type="button">카메라 시작</button>
+          <div class="control-panel">
             <div class="device-picker">
               <label class="device-picker__label" for="camera-select">카메라 선택</label>
               <div class="device-picker__controls">
@@ -45,47 +45,55 @@
                 </select>
                 <button id="refresh-cameras" class="button button--secondary" type="button">새로고침</button>
               </div>
+              <button id="camera-button" class="button" type="button">카메라 시작</button>
             </div>
-            <p id="camera-status" class="status" aria-live="polite">
-              카메라를 켜면 손 랜드마크를 추적합니다.
-            </p>
-            <div class="mode-card" aria-live="polite">
-              <p class="mode-card__eyebrow">Dual Hand Mode</p>
-              <h2 id="mode-label" class="mode-card__title">싱글 핸드 조작 모드</h2>
-              <p id="rps-status" class="mode-card__body">양손이 잡히면 가위바위보 판정이 시작됩니다.</p>
-              <p id="bonus-status" class="mode-card__body mode-card__body--accent">가위바위보 승리 시 보너스 점수와 부스트가 적용됩니다.</p>
-              <p id="left-hand-pose" class="mode-card__meta">왼손: 대기 중</p>
-              <p id="right-hand-pose" class="mode-card__meta">오른손: 대기 중</p>
+
+            <div class="device-picker">
+              <label class="device-picker__label" for="audio-file">음악 파일</label>
+              <div class="device-picker__controls">
+                <input id="audio-file" class="device-picker__file" type="file" accept="audio/*" />
+                <button id="use-sample-button" class="button button--secondary" type="button">샘플 곡</button>
+              </div>
+              <p id="track-status" class="track-status">샘플 곡이 기본 선택되어 있습니다.</p>
             </div>
+
+            <div class="mission-card">
+              <p class="mission-card__eyebrow">Control Matrix</p>
+              <h2 id="judge-text" class="mission-card__title">Ready</h2>
+              <p id="mission-text" class="mission-card__body">노트가 히트 라인에 닿을 때 손동작을 맞춰 보세요.</p>
+            </div>
+
             <ul class="gesture-guide">
-              <li>왼손과 오른손을 구분해서 화면에 표시</li>
-              <li>몇 프레임 연속으로 같은 제스처일 때만 반영해 오인식 감소</li>
-              <li>양손이 동시에 잡히면 가위바위보 모드로 전환</li>
-              <li>가위바위보 승리 시 보너스 점수와 임시 부스트 획득</li>
-              <li>사운드와 진동 피드백 지원</li>
-              <li>페이지가 열리면 카메라 자동 시작 시도</li>
-              <li>주먹은 일시정지 또는 재개</li>
-              <li>브이는 터보 모드 켜기 또는 끄기</li>
-              <li>엄지척은 게임 다시 시작</li>
-              <li>검지 방향을 위로 향하면 위로 이동</li>
-              <li>검지 방향을 왼쪽이나 오른쪽으로 기울이면 좌우 이동</li>
-              <li>손을 아래로 내리면 아래로 이동</li>
+              <li>방향 노트: 손을 위, 아래, 왼쪽, 오른쪽으로 기울여 입력</li>
+              <li>제스처 노트: 주먹, 브이, 엄지척을 맞는 타이밍에 입력</li>
+              <li>키보드 대체 입력: 화살표와 `Z`, `X`, `C`</li>
+              <li>음악 업로드 시 자동 비트 분석으로 노트맵 생성</li>
+              <li>스페이스바 또는 시작 버튼으로 현재 선택된 곡 재생</li>
             </ul>
           </div>
         </section>
 
-        <div class="board-shell">
-          <div id="board" class="board" role="grid" aria-label="Snake board"></div>
-          <div id="overlay" class="overlay" hidden>
-            <p id="overlay-message" class="overlay__message">게임 오버</p>
-            <button id="restart-button" class="button" type="button">다시 시작</button>
+        <section class="stage-shell" aria-label="Rhythm stage">
+          <div class="lane-labels" aria-hidden="true">
+            <span>LEFT</span><span>UP</span><span>DOWN</span><span>RIGHT</span><span>FIST</span><span>V</span><span>THUMB</span>
           </div>
-        </div>
+          <div id="stage" class="stage">
+            <div class="stage__grid"></div>
+            <div id="hit-line" class="hit-line"></div>
+            <div id="notes-layer" class="notes-layer"></div>
+            <div id="overlay" class="overlay">
+              <p id="overlay-message" class="overlay__message">스페이스바 또는 시작 버튼으로 플레이</p>
+              <button id="start-button" class="button" type="button">시작</button>
+            </div>
+          </div>
+        </section>
 
-        <div class="controls">
-          <p>카메라가 꺼져 있어도 방향키와 WASD로 플레이할 수 있습니다. 주먹은 일시정지와 카운트다운 재개, 브이는 부스트, 엄지척은 시작 또는 재시작입니다.</p>
-          <button id="restart-inline" class="button button--secondary" type="button">게임 리셋</button>
-        </div>
+        <footer class="controls">
+          <p id="song-status">샘플 비트맵 준비 완료. 카메라 없이도 키보드로 플레이할 수 있습니다.</p>
+          <div class="controls__actions">
+            <button id="restart-button" class="button button--secondary" type="button">다시 시작</button>
+          </div>
+        </footer>
       </section>
     </main>
 

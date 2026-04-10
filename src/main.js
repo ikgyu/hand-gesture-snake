@@ -1,1094 +1,637 @@
-import {
-  GRID_SIZE,
-  createInitialState,
-  queueDirection,
-  restartGame,
-  stepGame,
-} from "./gameLogic.js";
-
-const TICK_MS = 140;
-const TURBO_TICK_MS = 80;
-const BOOST_SCORE_PER_FOOD = 20;
-const NORMAL_SCORE_PER_FOOD = 10;
-const RPS_WIN_BONUS_SCORE = 30;
-const RPS_BONUS_TURBO_MS = 8000;
-const KEY_TO_DIRECTION = {
-  ArrowUp: "UP",
-  ArrowDown: "DOWN",
-  ArrowLeft: "LEFT",
-  ArrowRight: "RIGHT",
-  w: "UP",
-  W: "UP",
-  s: "DOWN",
-  S: "DOWN",
-  a: "LEFT",
-  A: "LEFT",
-  d: "RIGHT",
-  D: "RIGHT",
-};
-const GESTURE_LABELS = {
+const LANES = ["LEFT", "UP", "DOWN", "RIGHT", "FIST", "V_SIGN", "THUMBS_UP"];
+const DIRS = new Set(["LEFT", "UP", "DOWN", "RIGHT"]);
+const LABELS = {
+  LEFT: "왼쪽",
   UP: "위",
   DOWN: "아래",
-  LEFT: "왼쪽",
   RIGHT: "오른쪽",
   FIST: "주먹",
   V_SIGN: "브이",
   THUMBS_UP: "엄지척",
-  OPEN_HAND: "손바닥",
   WAITING: "대기 중",
 };
-const GESTURE_HOLD_MS = 180;
-const STABLE_POSE_FRAMES = 4;
-const STABLE_DIRECTION_FRAMES = 3;
-const HAND_KEYS = ["Left", "Right"];
-const RPS_POSES = ["FIST", "V_SIGN", "OPEN_HAND"];
-const RPS_LABELS = {
-  FIST: "바위",
-  V_SIGN: "가위",
-  OPEN_HAND: "보",
+const KEYS = {
+  ArrowLeft: "LEFT",
+  ArrowUp: "UP",
+  ArrowDown: "DOWN",
+  ArrowRight: "RIGHT",
+  z: "FIST",
+  Z: "FIST",
+  x: "V_SIGN",
+  X: "V_SIGN",
+  c: "THUMBS_UP",
+  C: "THUMBS_UP",
 };
+const SAMPLE_BPM = 116;
+const APPROACH = 2200;
+const PERFECT = 120;
+const GOOD = 220;
+const STABLE = 3;
+const CAMERA_COOLDOWN = 240;
 
-const boardElement = document.querySelector("#board");
-const scoreElement = document.querySelector("#score");
-const overlayElement = document.querySelector("#overlay");
-const overlayMessageElement = document.querySelector("#overlay-message");
-const restartButtonElement = document.querySelector("#restart-button");
-const restartInlineElement = document.querySelector("#restart-inline");
-const cameraElement = document.querySelector("#camera");
-const cameraOverlayElement = document.querySelector("#camera-overlay");
-const cameraButtonElement = document.querySelector("#camera-button");
-const cameraSelectElement = document.querySelector("#camera-select");
-const refreshCamerasElement = document.querySelector("#refresh-cameras");
-const cameraStatusElement = document.querySelector("#camera-status");
-const gestureLabelElement = document.querySelector("#gesture-label");
-const handednessLabelElement = document.querySelector("#handedness-label");
-const modeLabelElement = document.querySelector("#mode-label");
-const rpsStatusElement = document.querySelector("#rps-status");
-const bonusStatusElement = document.querySelector("#bonus-status");
-const leftHandPoseElement = document.querySelector("#left-hand-pose");
-const rightHandPoseElement = document.querySelector("#right-hand-pose");
+const $ = (s) => document.querySelector(s);
+const scoreEl = $("#score");
+const comboEl = $("#combo");
+const accuracyEl = $("#accuracy");
+const cameraEl = $("#camera");
+const overlayCanvas = $("#camera-overlay");
+const cameraBtn = $("#camera-button");
+const cameraSel = $("#camera-select");
+const refreshBtn = $("#refresh-cameras");
+const audioFileEl = $("#audio-file");
+const useSampleBtn = $("#use-sample-button");
+const trackStatusEl = $("#track-status");
+const cameraStatusEl = $("#camera-status");
+const gestureEl = $("#gesture-label");
+const judgeEl = $("#judge-text");
+const missionEl = $("#mission-text");
+const notesLayer = $("#notes-layer");
+const overlayEl = $("#overlay");
+const overlayMsgEl = $("#overlay-message");
+const startBtn = $("#start-button");
+const restartBtn = $("#restart-button");
+const songStatusEl = $("#song-status");
 
-let state = createInitialState({ gridSize: GRID_SIZE });
-let intervalId = null;
+let score = 0;
+let combo = 0;
+let bestCombo = 0;
+let running = false;
+let startAt = 0;
+let rafId = 0;
+let audio = null;
+let hands = null;
 let cameraController = null;
-let handsInstance = null;
-let currentMediaStream = null;
-let audioContext = null;
-let activeGesture = null;
-let lastGestureAt = 0;
-let handledActionGesture = null;
-let countdownTimeoutId = null;
-let turboTimeoutId = null;
-let isPaused = false;
-let manualTurboEnabled = false;
-let bonusTurboEnabled = false;
-let hasStarted = false;
-let activeHandedness = "손 정보 대기 중";
-let rpsWinnerSignature = null;
-let previousGameOver = false;
-let selectedCameraDeviceId = "";
-let availableCameras = [];
-const handTrackers = {
-  Left: createHandTracker(),
-  Right: createHandTracker(),
-};
+let media = null;
+let devices = [];
+let selectedDeviceId = "";
+let gestureHistory = [];
+let lastCameraGesture = "";
+let lastCameraGestureAt = 0;
+let currentSource = null;
+let currentTrackMode = "sample";
+let currentTrackName = "샘플 곡";
+let uploadedBuffer = null;
+let notes = createSampleBeatmap();
+const noteEls = new Map();
+const stats = { perfect: 0, good: 0, miss: 0 };
 
-buildBoard(state.gridSize);
-render(state);
-setupCameraControls();
-setupFeedbackControls();
+buildStage();
+renderHud();
+setupAudio();
+setupCamera();
+setupInputs();
+showOverlay("스페이스바 또는 시작 버튼으로 플레이", false);
 
-document.addEventListener("keydown", (event) => {
-  if (!hasStarted && event.key === "Enter") {
-    event.preventDefault();
-    startGameFromStandby();
-    return;
-  }
-
-  const nextDirection = KEY_TO_DIRECTION[event.key];
-  if (!nextDirection) {
-    return;
-  }
-
-  event.preventDefault();
-
-  if (!hasStarted || isPaused || state.isGameOver) {
-    return;
-  }
-
-  state = queueDirection(state, nextDirection);
-});
-
-restartButtonElement.addEventListener("click", startGameFromStandby);
-restartInlineElement.addEventListener("click", startGameFromStandby);
-
-function startGameFromStandby() {
-  stopCountdown();
-  stopTurboBonus();
-  state = restartGame({ gridSize: GRID_SIZE });
-  isPaused = false;
-  manualTurboEnabled = false;
-  bonusTurboEnabled = false;
-  hasStarted = true;
-  rpsWinnerSignature = null;
-  render(state);
-  startLoop();
-  cameraStatusElement.textContent = "게임을 시작했습니다. 손 방향이나 키보드로 움직여 보세요.";
-  bonusStatusElement.textContent = "보너스 대기 중";
-  playToneSequence([440, 660], 0.08);
-  vibrate([35, 20, 45]);
+function createSampleBeatmap() {
+  const seq = ["LEFT", "UP", "DOWN", "RIGHT", "FIST", "LEFT", "UP", "V_SIGN", "DOWN", "RIGHT", "LEFT", "THUMBS_UP", "UP", "DOWN", "FIST", "RIGHT"];
+  const gap = (60000 / SAMPLE_BPM) / 2;
+  const intro = 1800;
+  return Array.from({ length: 32 }, (_, i) => makeNote(`sample-${i}`, seq[i % seq.length], intro + i * gap));
 }
 
-function startLoop() {
-  if (isPaused || !hasStarted) {
-    stopLoop();
-    return;
-  }
-
-  stopLoop();
-  intervalId = window.setInterval(() => {
-    state = stepGame(state, {
-      scorePerFood: isTurboActive() ? BOOST_SCORE_PER_FOOD : NORMAL_SCORE_PER_FOOD,
-    });
-    render(state);
-
-    if (state.isGameOver) {
-      stopLoop();
-    }
-  }, getTickMs());
+function makeNote(id, lane, time) {
+  return { id, lane, time, judged: false, result: null };
 }
 
-function stopLoop() {
-  if (intervalId !== null) {
-    window.clearInterval(intervalId);
-    intervalId = null;
+function buildStage() {
+  notesLayer.replaceChildren();
+  noteEls.clear();
+  for (const note of notes) {
+    const el = document.createElement("div");
+    el.className = `note ${DIRS.has(note.lane) ? "note--direction" : "note--gesture"}`;
+    el.textContent = formatLane(note.lane);
+    notesLayer.appendChild(el);
+    noteEls.set(note.id, el);
   }
 }
 
-function buildBoard(gridSize) {
-  const fragment = document.createDocumentFragment();
-  boardElement.style.gridTemplateColumns = `repeat(${gridSize}, 1fr)`;
-
-  for (let index = 0; index < gridSize * gridSize; index += 1) {
-    const cell = document.createElement("div");
-    cell.className = "cell";
-    cell.setAttribute("role", "gridcell");
-    fragment.appendChild(cell);
-  }
-
-  boardElement.replaceChildren(fragment);
-}
-
-function render(nextState) {
-  const cells = boardElement.children;
-  const snakeLookup = new Map(nextState.snake.map((cell, index) => [toCellKey(cell), index]));
-  const foodKey = toCellKey(nextState.food);
-
-  for (let y = 0; y < nextState.gridSize; y += 1) {
-    for (let x = 0; x < nextState.gridSize; x += 1) {
-      const key = `${x},${y}`;
-      const cellIndex = y * nextState.gridSize + x;
-      const cellElement = cells[cellIndex];
-
-      cellElement.className = "cell";
-      if (key === foodKey) {
-        cellElement.classList.add("cell--food");
-      }
-
-      if (snakeLookup.has(key)) {
-        cellElement.classList.add("cell--snake");
-        if (snakeLookup.get(key) === 0) {
-          cellElement.classList.add("cell--head");
-        }
-      }
-    }
-  }
-
-  scoreElement.textContent = String(nextState.score);
-
-  if (!hasStarted) {
-    overlayMessageElement.textContent = "엄지척 또는 Enter로 시작";
-    overlayElement.hidden = false;
-  } else if (isPaused) {
-    overlayMessageElement.textContent = isTurboActive() ? "일시정지 - 부스트 모드" : "일시정지";
-    overlayElement.hidden = false;
-  } else if (nextState.isGameOver) {
-    overlayMessageElement.textContent = `게임 오버 - 점수 ${nextState.score}`;
-    overlayElement.hidden = false;
-    restartButtonElement.focus();
-  } else {
-    overlayElement.hidden = true;
-  }
-
-  if (nextState.isGameOver && !previousGameOver) {
-    playToneSequence([240, 180], 0.12);
-    vibrate([80, 30, 120]);
-  }
-
-  previousGameOver = nextState.isGameOver;
-}
-
-function toCellKey(cell) {
-  return `${cell.x},${cell.y}`;
-}
-
-function setupCameraControls() {
-  if (!window.Hands || !window.Camera) {
-    cameraStatusElement.textContent =
-      "손 인식 라이브러리를 불러오지 못했습니다. 인터넷 연결을 확인하거나 키보드로 플레이해 주세요.";
-    cameraButtonElement.disabled = true;
-    return;
-  }
-
-  cameraButtonElement.addEventListener("click", () => {
-    startCamera().catch((error) => {
-      console.error(error);
-      cameraButtonElement.disabled = false;
-      cameraStatusElement.textContent =
-        "카메라에 접근하지 못했습니다. 브라우저 권한을 허용한 뒤 다시 시도해 주세요.";
-    });
-  });
-
-  cameraSelectElement.addEventListener("change", () => {
-    selectedCameraDeviceId = cameraSelectElement.value;
-    if (!selectedCameraDeviceId) {
+function setupInputs() {
+  document.addEventListener("keydown", (event) => {
+    if (event.code === "Space") {
+      event.preventDefault();
+      if (!running) startGame();
       return;
     }
-
-    startCamera({ forceRestart: true }).catch((error) => {
-      console.error(error);
-      cameraStatusElement.textContent =
-        "선택한 카메라로 전환하지 못했습니다. 다시 시도해 주세요.";
-    });
+    const lane = KEYS[event.key];
+    if (!lane) return;
+    event.preventDefault();
+    registerInput(lane, "keyboard");
   });
 
-  refreshCamerasElement.addEventListener("click", () => {
-    refreshCameraDevices({ requestPermission: true }).catch((error) => {
-      console.error(error);
-      cameraStatusElement.textContent =
-        "카메라 목록을 새로고침하지 못했습니다. 권한을 확인해 주세요.";
-    });
+  startBtn.addEventListener("click", startGame);
+  restartBtn.addEventListener("click", startGame);
+
+  audioFileEl.addEventListener("change", async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    await loadUploadedTrack(file);
   });
 
-  navigator.mediaDevices?.addEventListener?.("devicechange", () => {
-    refreshCameraDevices().catch(() => {});
+  useSampleBtn.addEventListener("click", () => {
+    stopPlayback();
+    currentTrackMode = "sample";
+    currentTrackName = "샘플 곡";
+    uploadedBuffer = null;
+    notes = createSampleBeatmap();
+    buildStage();
+    resetGame();
+    trackStatusEl.textContent = "샘플 곡이 다시 선택되었습니다.";
+    songStatusEl.textContent = "샘플 비트맵 준비 완료. 카메라 없이도 키보드로 플레이할 수 있습니다.";
+    showOverlay("스페이스바 또는 시작 버튼으로 플레이", false);
   });
-
-  startCamera().catch(() => {
-    cameraButtonElement.disabled = false;
-    cameraStatusElement.textContent =
-      "자동 카메라 시작이 브라우저에서 차단되었습니다. 버튼을 눌러 시작해 주세요.";
-  });
 }
 
-async function startCamera(options = {}) {
-  const forceRestart = options.forceRestart ?? false;
-  if (cameraController && !forceRestart) {
-    return;
-  }
+async function loadUploadedTrack(file) {
+  try {
+    resumeAudio();
+    trackStatusEl.textContent = `${file.name} 분석 중...`;
+    const arrayBuffer = await file.arrayBuffer();
+    const buffer = await decodeAudio(arrayBuffer);
+    const analyzedNotes = createBeatmapFromAudio(buffer);
 
-  cameraStatusElement.textContent = "카메라와 손 추적 모델을 준비하고 있습니다...";
-  cameraButtonElement.disabled = true;
-  await stopCameraStream();
-
-  const overlayContext = cameraOverlayElement.getContext("2d");
-  if (!handsInstance) {
-    handsInstance = createHandsInstance(overlayContext);
-  }
-
-  currentMediaStream = await requestCameraStream();
-  cameraElement.srcObject = currentMediaStream;
-  await cameraElement.play();
-
-  cameraController = new window.Camera(cameraElement, {
-    onFrame: async () => {
-      await handsInstance.send({ image: cameraElement });
-    },
-  });
-
-  await cameraController.start();
-  await refreshCameraDevices();
-  cameraButtonElement.textContent = "카메라 연결됨";
-  cameraStatusElement.textContent = getSelectedCameraStatus();
-  playToneSequence([520, 720], 0.05);
-  cameraButtonElement.disabled = false;
-}
-
-function syncCanvasSize(source) {
-  const width = source.videoWidth ?? source.width;
-  const height = source.videoHeight ?? source.height;
-
-  if (!width || !height) {
-    return;
-  }
-
-  if (
-    cameraOverlayElement.width === width &&
-    cameraOverlayElement.height === height
-  ) {
-    return;
-  }
-
-  cameraOverlayElement.width = width;
-  cameraOverlayElement.height = height;
-}
-
-function drawResults(context, results) {
-  context.save();
-  context.clearRect(0, 0, cameraOverlayElement.width, cameraOverlayElement.height);
-
-  if (results.multiHandLandmarks?.length) {
-    for (const landmarks of results.multiHandLandmarks) {
-      window.drawConnectors(context, landmarks, window.HAND_CONNECTIONS, {
-        color: "#7dc4ff",
-        lineWidth: 4,
-      });
-      window.drawLandmarks(context, landmarks, {
-        color: "#fff0a8",
-        lineWidth: 1,
-        radius: 4,
-      });
-    }
-  }
-
-  context.restore();
-}
-
-function createHandsInstance(overlayContext) {
-  const hands = new window.Hands({
-    locateFile(file) {
-      return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
-    },
-  });
-
-  hands.setOptions({
-    maxNumHands: 2,
-    modelComplexity: 1,
-    minDetectionConfidence: 0.7,
-    minTrackingConfidence: 0.6,
-  });
-
-  hands.onResults((results) => {
-    syncCanvasSize(results.image);
-    drawResults(overlayContext, results);
-    updateGestureFromResults(results);
-  });
-
-  return hands;
-}
-
-async function requestCameraStream() {
-  const constraints = {
-    audio: false,
-    video: selectedCameraDeviceId
-      ? {
-          deviceId: { exact: selectedCameraDeviceId },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        }
-      : {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          facingMode: isMobileDevice() ? "user" : undefined,
-        },
-  };
-
-  const stream = await navigator.mediaDevices.getUserMedia(constraints);
-  const track = stream.getVideoTracks()[0];
-  const settings = track.getSettings?.() ?? {};
-  if (settings.deviceId) {
-    selectedCameraDeviceId = settings.deviceId;
-  }
-  return stream;
-}
-
-async function stopCameraStream() {
-  if (cameraController?.stop) {
-    await cameraController.stop();
-  }
-  cameraController = null;
-
-  if (currentMediaStream) {
-    for (const track of currentMediaStream.getTracks()) {
-      track.stop();
-    }
-    currentMediaStream = null;
-  }
-
-  if (cameraElement.srcObject) {
-    cameraElement.srcObject = null;
+    uploadedBuffer = buffer;
+    currentTrackMode = "upload";
+    currentTrackName = file.name;
+    notes = analyzedNotes;
+    buildStage();
+    resetGame();
+    trackStatusEl.textContent = `${file.name} 분석 완료: 노트 ${notes.length}개 생성`;
+    songStatusEl.textContent = `${file.name} 준비 완료. 시작 버튼으로 재생하세요.`;
+    missionEl.textContent = "업로드한 음악의 피크를 분석해 자동 노트맵을 생성했습니다.";
+    showOverlay(`${file.name} 로드 완료`, false);
+  } catch (error) {
+    console.error(error);
+    trackStatusEl.textContent = "음악 분석에 실패했습니다. 다른 파일을 시도해 주세요.";
   }
 }
 
-async function refreshCameraDevices(options = {}) {
-  const requestPermission = options.requestPermission ?? false;
-  if (!navigator.mediaDevices?.enumerateDevices) {
-    populateCameraOptions([]);
-    return;
-  }
-
-  if (requestPermission && !currentMediaStream) {
-    try {
-      const permissionStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-      permissionStream.getTracks().forEach((track) => track.stop());
-    } catch (error) {
-      console.error(error);
-    }
-  }
-
-  const devices = await navigator.mediaDevices.enumerateDevices();
-  availableCameras = devices.filter((device) => device.kind === "videoinput");
-  if (!selectedCameraDeviceId) {
-    const preferredCamera = pickPreferredCamera(availableCameras);
-    selectedCameraDeviceId = preferredCamera?.deviceId ?? "";
-  }
-  populateCameraOptions(availableCameras);
+function startGame() {
+  resetGame();
+  resumeAudio();
+  running = true;
+  startAt = performance.now();
+  overlayEl.hidden = true;
+  songStatusEl.textContent = `${currentTrackName} 재생 중. 히트 라인에 맞춰 손동작을 입력하세요.`;
+  missionEl.textContent = currentTrackMode === "upload"
+    ? "업로드된 음악의 피크를 따라 생성된 노트를 맞춰 보세요."
+    : "Perfect를 노리려면 노트가 히트 라인에 닿는 순간 입력하세요.";
+  startPlayback();
+  rafId = requestAnimationFrame(loop);
 }
 
-function populateCameraOptions(devices) {
-  cameraSelectElement.replaceChildren();
-
-  if (!devices.length) {
-    const option = document.createElement("option");
-    option.value = "";
-    option.textContent = "사용 가능한 카메라 없음";
-    cameraSelectElement.appendChild(option);
-    cameraSelectElement.disabled = true;
-    return;
+function resetGame() {
+  cancelAnimationFrame(rafId);
+  stopPlayback();
+  running = false;
+  score = 0;
+  combo = 0;
+  bestCombo = 0;
+  stats.perfect = 0;
+  stats.good = 0;
+  stats.miss = 0;
+  for (const note of notes) {
+    note.judged = false;
+    note.result = null;
   }
-
-  cameraSelectElement.disabled = false;
-  for (const [index, device] of devices.entries()) {
-    const option = document.createElement("option");
-    option.value = device.deviceId;
-    option.textContent = device.label || `카메라 ${index + 1}`;
-    cameraSelectElement.appendChild(option);
+  for (const el of noteEls.values()) {
+    el.hidden = false;
+    el.classList.remove("note--hit");
   }
-
-  if (!devices.some((device) => device.deviceId === selectedCameraDeviceId)) {
-    selectedCameraDeviceId = pickPreferredCamera(devices)?.deviceId ?? devices[0].deviceId;
-  }
-
-  cameraSelectElement.value = selectedCameraDeviceId;
+  judgeEl.textContent = "Ready";
+  renderHud();
 }
 
-function pickPreferredCamera(devices) {
-  const preferredPatterns = [/camo/i, /iphone/i, /ios/i, /continuity/i, /epoccam/i];
-  return (
-    devices.find((device) => preferredPatterns.some((pattern) => pattern.test(device.label))) ??
-    devices.find((device) => /front|facetime/i.test(device.label)) ??
-    devices[0] ??
-    null
-  );
+function loop() {
+  const elapsed = performance.now() - startAt;
+  drawNotes(elapsed);
+  markMisses(elapsed);
+  renderHud();
+  if (elapsed > notes.at(-1).time + APPROACH) return endGame();
+  rafId = requestAnimationFrame(loop);
 }
 
-function getSelectedCameraStatus() {
-  const currentCamera =
-    availableCameras.find((device) => device.deviceId === selectedCameraDeviceId) ??
-    pickPreferredCamera(availableCameras);
-
-  if (!currentCamera) {
-    return "손이 보이면 방향을 인식합니다. 검지 방향을 크게 움직여 보세요.";
-  }
-
-  return `${currentCamera.label || "선택한 카메라"}로 연결되었습니다. 손이 보이면 방향을 인식합니다.`;
-}
-
-function updateGestureFromResults(results) {
-  const landmarksList = results.multiHandLandmarks ?? [];
-  const handednessList = results.multiHandedness ?? [];
-
-  if (!landmarksList.length) {
-    resetHandTrackingUi();
-    return;
-  }
-
-  const detections = landmarksList.map((landmarks, index) =>
-    buildHandDetection(landmarks, handednessList[index]?.label, index)
-  );
-  resetMissingHandTrackers(detections);
-
-  syncHandPanels(detections);
-
-  if (handleRpsMode(detections)) {
-    return;
-  }
-
-  modeLabelElement.textContent = "싱글 핸드 조작 모드";
-  rpsStatusElement.textContent = "한 손으로 방향과 액션 제스처를 조작하고 있습니다.";
-
-  const primaryHand = selectPrimaryHand(detections);
-  if (!primaryHand) {
-    gestureLabelElement.textContent = GESTURE_LABELS.WAITING;
-    activeGesture = null;
-    handledActionGesture = null;
-    return;
-  }
-
-  activeHandedness = `${primaryHand.displayName} 제어 중`;
-  handednessLabelElement.textContent = activeHandedness;
-  gestureLabelElement.textContent = GESTURE_LABELS[primaryHand.label] ?? GESTURE_LABELS.WAITING;
-
-  if (primaryHand.label === "FIST") {
-    maybeTriggerGestureAction("FIST", togglePause);
-    return;
-  }
-
-  if (primaryHand.label === "V_SIGN") {
-    maybeTriggerGestureAction("V_SIGN", toggleBoostMode);
-    return;
-  }
-
-  if (primaryHand.label === "THUMBS_UP") {
-    maybeTriggerGestureAction("THUMBS_UP", handleThumbsUp);
-    return;
-  }
-
-  if (primaryHand.label === "WAITING" || !primaryHand.direction) {
-    activeGesture = null;
-    handledActionGesture = null;
-    return;
-  }
-
-  applyDirectionGesture(primaryHand.direction);
-}
-
-function buildHandDetection(landmarks, handednessLabel, index) {
-  const handKey = normalizeHandKey(handednessLabel, index);
-  const tracker = handTrackers[handKey];
-  const rawHandPose = classifyHandPose(landmarks);
-  const stablePoseLabel = getStableValue(tracker.poseHistory, rawHandPose.label, STABLE_POSE_FRAMES);
-  const stableDirection = rawHandPose.direction
-    ? getStableValue(tracker.directionHistory, rawHandPose.direction, STABLE_DIRECTION_FRAMES)
-    : clearDirectionHistory(tracker);
-
-  return {
-    handKey,
-    displayName: formatHandedness(handKey),
-    label: stablePoseLabel ?? "WAITING",
-    direction: stableDirection,
-  };
-}
-
-function applyDirectionGesture(nextGesture) {
-  const now = performance.now();
-  if (nextGesture !== activeGesture) {
-    activeGesture = nextGesture;
-    lastGestureAt = now;
-    return;
-  }
-
-  if (now - lastGestureAt < GESTURE_HOLD_MS) {
-    return;
-  }
-
-  cameraStatusElement.textContent = getModeStatusMessage();
-  if (hasStarted && !isPaused && !state.isGameOver) {
-    state = queueDirection(state, nextGesture);
-  }
-  lastGestureAt = now;
-}
-
-function maybeTriggerGestureAction(label, action) {
-  if (activeGesture !== label) {
-    activeGesture = label;
-    handledActionGesture = null;
-    return;
-  }
-
-  if (handledActionGesture === label) {
-    return;
-  }
-
-  handledActionGesture = label;
-  action();
-}
-
-function getStableValue(history, nextValue, requiredFrames) {
-  history.push(nextValue);
-  if (history.length > requiredFrames) {
-    history.shift();
-  }
-
-  if (history.length < requiredFrames) {
-    return null;
-  }
-
-  return history.every((value) => value === nextValue) ? nextValue : null;
-}
-
-function clearDirectionHistory(tracker) {
-  tracker.directionHistory = [];
-  return null;
-}
-
-function createHandTracker() {
-  return {
-    poseHistory: [],
-    directionHistory: [],
-  };
-}
-
-function resetHandTrackingUi() {
-  activeGesture = null;
-  handledActionGesture = null;
-  lastGestureAt = 0;
-  activeHandedness = "손 정보 대기 중";
-  rpsWinnerSignature = null;
-
-  for (const handKey of HAND_KEYS) {
-    handTrackers[handKey] = createHandTracker();
-  }
-
-  gestureLabelElement.textContent = GESTURE_LABELS.WAITING;
-  handednessLabelElement.textContent = activeHandedness;
-  modeLabelElement.textContent = "싱글 핸드 조작 모드";
-  rpsStatusElement.textContent = "양손이 잡히면 가위바위보 판정이 시작됩니다.";
-  bonusStatusElement.textContent = "보너스 대기 중";
-  leftHandPoseElement.textContent = "왼손: 대기 중";
-  rightHandPoseElement.textContent = "오른손: 대기 중";
-}
-
-function resetMissingHandTrackers(detections) {
-  for (const handKey of HAND_KEYS) {
-    if (!detections.some((detection) => detection.handKey === handKey)) {
-      handTrackers[handKey] = createHandTracker();
+function drawNotes(elapsed) {
+  const height = notesLayer.clientHeight || 600;
+  const hitY = height - 88;
+  const laneWidth = notesLayer.clientWidth / LANES.length;
+  for (const note of notes) {
+    const el = noteEls.get(note.id);
+    if (!el) continue;
+    const t = note.time - elapsed;
+    const p = clamp(1 - t / APPROACH, -0.15, 1.15);
+    const x = LANES.indexOf(note.lane) * laneWidth;
+    const y = p * hitY;
+    const scale = 0.82 + Math.max(0, p) * 0.25;
+    const opacity = note.judged ? 0.12 : clamp(0.35 + p * 0.9, 0.25, 1);
+    el.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+    el.style.opacity = String(opacity);
+    if (note.judged) {
+      el.classList.add("note--hit");
+      el.hidden = elapsed - note.time > 260;
+    } else {
+      el.classList.remove("note--hit");
+      el.hidden = false;
     }
   }
 }
 
-function normalizeHandKey(handednessLabel, index) {
-  if (handednessLabel === "Left" || handednessLabel === "Right") {
-    return handednessLabel;
+function registerInput(lane, source) {
+  gestureEl.textContent = LABELS[lane] ?? LABELS.WAITING;
+  cameraStatusEl.textContent = source === "camera" ? `${LABELS[lane]} 입력 감지` : `${lane} 키 입력 감지`;
+  if (!running) return;
+
+  const elapsed = performance.now() - startAt;
+  const note = notes.find((n) => !n.judged && n.lane === lane && Math.abs(elapsed - n.time) <= GOOD);
+  if (!note) {
+    combo = 0;
+    judgeEl.textContent = "Miss";
+    missionEl.textContent = "해당 타이밍에 맞는 노트가 없었습니다.";
+    return;
   }
 
-  return HAND_KEYS[index] ?? "Right";
+  note.judged = true;
+  const delta = Math.abs(elapsed - note.time);
+  if (delta <= PERFECT) {
+    note.result = "PERFECT";
+    score += 300;
+    combo += 1;
+    bestCombo = Math.max(bestCombo, combo);
+    stats.perfect += 1;
+    judgeEl.textContent = "Perfect";
+    missionEl.textContent = `${LABELS[lane]} 입력이 완벽하게 맞았습니다.`;
+    beep(840, 0.05, 0.08);
+  } else {
+    note.result = "GOOD";
+    score += 150;
+    combo += 1;
+    bestCombo = Math.max(bestCombo, combo);
+    stats.good += 1;
+    judgeEl.textContent = "Good";
+    missionEl.textContent = `${LABELS[lane]} 입력이 안정적으로 들어왔습니다.`;
+    beep(560, 0.06, 0.08);
+  }
 }
 
-function syncHandPanels(detections) {
-  const leftHand = detections.find((detection) => detection.handKey === "Left");
-  const rightHand = detections.find((detection) => detection.handKey === "Right");
-  const summary = detections
-    .map((detection) => `${detection.displayName}: ${describePose(detection.label, detection.direction)}`)
-    .join(" / ");
-
-  activeHandedness = summary || "손 정보 확인 중";
-  handednessLabelElement.textContent = activeHandedness;
-  leftHandPoseElement.textContent = `왼손: ${describePose(leftHand?.label ?? "WAITING", leftHand?.direction ?? null)}`;
-  rightHandPoseElement.textContent = `오른손: ${describePose(rightHand?.label ?? "WAITING", rightHand?.direction ?? null)}`;
-}
-
-function describePose(label, direction) {
-  if (RPS_POSES.includes(label)) {
-    return RPS_LABELS[label];
-  }
-
-  if (label === "WAITING") {
-    return "대기 중";
-  }
-
-  return GESTURE_LABELS[direction ?? label] ?? "대기 중";
-}
-
-function selectPrimaryHand(detections) {
-  return (
-    detections.find((detection) => detection.handKey === "Right" && detection.label !== "WAITING") ??
-    detections.find((detection) => detection.handKey === "Left" && detection.label !== "WAITING") ??
-    null
-  );
-}
-
-function handleRpsMode(detections) {
-  const rpsHands = detections.filter((detection) => RPS_POSES.includes(detection.label));
-  if (rpsHands.length < 2) {
-    rpsWinnerSignature = null;
-    return false;
-  }
-
-  const leftHand = rpsHands.find((detection) => detection.handKey === "Left") ?? rpsHands[0];
-  const rightHand = rpsHands.find((detection) => detection.handKey === "Right") ?? rpsHands[1];
-  if (!leftHand || !rightHand || leftHand === rightHand) {
-    return false;
-  }
-
-  const result = decideRpsWinner(leftHand.label, rightHand.label);
-  const signature = `${leftHand.label}:${rightHand.label}:${result}`;
-  modeLabelElement.textContent = "듀얼 핸드 가위바위보 모드";
-  rpsStatusElement.textContent = buildRpsStatus(leftHand.label, rightHand.label, result);
-  gestureLabelElement.textContent = "가위바위보";
-  handednessLabelElement.textContent = `${leftHand.displayName} vs ${rightHand.displayName}`;
-  activeGesture = null;
-  handledActionGesture = null;
-
-  if (signature !== rpsWinnerSignature) {
-    rpsWinnerSignature = signature;
-    const statusMessage = buildRpsStatus(leftHand.label, rightHand.label, result);
-    cameraStatusElement.textContent = statusMessage;
-    applyRpsBonus(result, statusMessage);
-  }
-
-  return true;
-}
-
-function decideRpsWinner(leftLabel, rightLabel) {
-  if (leftLabel === rightLabel) {
-    return "DRAW";
-  }
-
-  const leftWins =
-    (leftLabel === "FIST" && rightLabel === "V_SIGN") ||
-    (leftLabel === "V_SIGN" && rightLabel === "OPEN_HAND") ||
-    (leftLabel === "OPEN_HAND" && rightLabel === "FIST");
-
-  return leftWins ? "LEFT" : "RIGHT";
-}
-
-function buildRpsStatus(leftLabel, rightLabel, winner) {
-  const leftName = RPS_LABELS[leftLabel];
-  const rightName = RPS_LABELS[rightLabel];
-
-  if (winner === "DRAW") {
-    return `왼손 ${leftName}, 오른손 ${rightName}. 비겼습니다.`;
-  }
-
-  return winner === "LEFT"
-    ? `왼손 ${leftName}, 오른손 ${rightName}. 왼손 승리입니다.`
-    : `왼손 ${leftName}, 오른손 ${rightName}. 오른손 승리입니다.`;
-}
-
-function classifyHandPose(landmarks) {
-  const palmSize = getPalmSize(landmarks);
-  const fingerStates = getFingerStates(landmarks, palmSize);
-  const thumbExtended = fingerStates.thumb;
-  const indexExtended = fingerStates.index;
-  const middleExtended = fingerStates.middle;
-  const ringExtended = fingerStates.ring;
-  const pinkyExtended = fingerStates.pinky;
-
-  if (!thumbExtended && !indexExtended && !middleExtended && !ringExtended && !pinkyExtended) {
-    return { label: "FIST", direction: null };
-  }
-
-  if (!thumbExtended && indexExtended && middleExtended && !ringExtended && !pinkyExtended) {
-    const spread = Math.abs(landmarks[8].x - landmarks[12].x);
-    if (spread > 0.05) {
-      return { label: "V_SIGN", direction: null };
+function markMisses(elapsed) {
+  for (const note of notes) {
+    if (!note.judged && elapsed - note.time > GOOD) {
+      note.judged = true;
+      note.result = "MISS";
+      combo = 0;
+      stats.miss += 1;
+      judgeEl.textContent = "Miss";
+      missionEl.textContent = `${LABELS[note.lane]} 노트를 놓쳤습니다.`;
     }
   }
-
-  if (
-    thumbExtended &&
-    !indexExtended &&
-    !middleExtended &&
-    !ringExtended &&
-    !pinkyExtended &&
-    landmarks[4].y < landmarks[2].y - palmSize * 0.15
-  ) {
-    return { label: "THUMBS_UP", direction: null };
-  }
-
-  if (thumbExtended && indexExtended && middleExtended && ringExtended && pinkyExtended) {
-    return { label: "OPEN_HAND", direction: detectDirection(landmarks, palmSize) };
-  }
-
-  const direction = detectDirection(landmarks, palmSize);
-  return { label: direction, direction };
 }
 
-function detectDirection(landmarks, palmSize = getPalmSize(landmarks)) {
-  const wrist = landmarks[0];
-  const indexBase = landmarks[5];
-  const indexTip = landmarks[8];
-  const dx = indexTip.x - wrist.x;
-  const dy = indexTip.y - wrist.y;
-  const extensionRatio = distance(indexTip, wrist) / palmSize;
-
-  if (extensionRatio < 1.15) {
-    return state.direction;
-  }
-
-  if (Math.abs(dx) > Math.abs(dy) * 0.9) {
-    return dx > 0 ? "RIGHT" : "LEFT";
-  }
-
-  return dy > 0 ? "DOWN" : "UP";
+function endGame() {
+  running = false;
+  cancelAnimationFrame(rafId);
+  stopPlayback();
+  songStatusEl.textContent = `${currentTrackName} 종료. 최고 콤보 ${bestCombo}`;
+  showOverlay(`곡 종료 - Score ${score}`, false);
 }
 
-function getFingerStates(landmarks, palmSize) {
-  return {
-    thumb: isThumbExtended(landmarks, palmSize),
-    index: isFingerExtended(landmarks, 5, 6, 8, palmSize),
-    middle: isFingerExtended(landmarks, 9, 10, 12, palmSize),
-    ring: isFingerExtended(landmarks, 13, 14, 16, palmSize),
-    pinky: isFingerExtended(landmarks, 17, 18, 20, palmSize),
-  };
+function renderHud() {
+  const total = stats.perfect + stats.good + stats.miss;
+  const acc = total === 0 ? 100 : Math.round((stats.perfect * 100 + stats.good * 70) / total);
+  scoreEl.textContent = String(score);
+  comboEl.textContent = String(combo);
+  accuracyEl.textContent = `${acc}%`;
 }
 
-function isFingerExtended(landmarks, mcpIndex, pipIndex, tipIndex, palmSize) {
-  const mcp = landmarks[mcpIndex];
-  const pip = landmarks[pipIndex];
-  const tip = landmarks[tipIndex];
-  const tipDistance = distance(tip, mcp) / palmSize;
-  const pipDistance = distance(pip, mcp) / palmSize;
-
-  return tipDistance > Math.max(0.72, pipDistance * 1.18);
+function showOverlay(message, hidden) {
+  overlayMsgEl.textContent = message;
+  overlayEl.hidden = hidden;
 }
 
-function isThumbExtended(landmarks, palmSize) {
-  const thumbTip = landmarks[4];
-  const thumbIp = landmarks[3];
-  const thumbMcp = landmarks[2];
-  const reach = distance(thumbTip, thumbMcp) / palmSize;
-  const bend = distance(thumbIp, thumbMcp) / palmSize;
-
-  return reach > Math.max(0.55, bend * 1.14);
-}
-
-function getPalmSize(landmarks) {
-  const baseSpan =
-    distance(landmarks[0], landmarks[5]) +
-    distance(landmarks[0], landmarks[17]) +
-    distance(landmarks[5], landmarks[17]);
-
-  return Math.max(baseSpan / 3, 0.08);
-}
-
-function distance(a, b) {
-  return Math.hypot(a.x - b.x, a.y - b.y);
-}
-
-function setupFeedbackControls() {
-  const resumeAudio = () => {
-    ensureAudioContext();
-    if (audioContext?.state === "suspended") {
-      audioContext.resume().catch(() => {});
-    }
-  };
-
+function setupAudio() {
   window.addEventListener("pointerdown", resumeAudio, { passive: true });
   window.addEventListener("keydown", resumeAudio);
 }
 
-function ensureAudioContext() {
-  if (!audioContext) {
-    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContextCtor) {
-      return null;
+function resumeAudio() {
+  if (!audio) {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    audio = new Ctx();
+  }
+  if (audio.state === "suspended") audio.resume().catch(() => {});
+}
+
+async function decodeAudio(arrayBuffer) {
+  if (!audio) resumeAudio();
+  return audio.decodeAudioData(arrayBuffer.slice(0));
+}
+
+function startPlayback() {
+  if (!audio || audio.state !== "running") return;
+  if (currentTrackMode === "upload" && uploadedBuffer) {
+    const source = audio.createBufferSource();
+    source.buffer = uploadedBuffer;
+    source.connect(audio.destination);
+    source.start(audio.currentTime + 0.08);
+    currentSource = source;
+    return;
+  }
+  scheduleSampleTrack();
+}
+
+function stopPlayback() {
+  if (currentSource) {
+    try {
+      currentSource.stop();
+    } catch {}
+    currentSource.disconnect?.();
+    currentSource = null;
+  }
+}
+
+function scheduleSampleTrack() {
+  const step = (60 / SAMPLE_BPM) / 2;
+  const base = audio.currentTime + 0.08;
+  for (let i = 0; i < notes.length + 8; i += 1) {
+    const down = i % 2 === 0;
+    beep(down ? 140 : 220, down ? 0.11 : 0.06, down ? 0.12 : 0.06, base + i * step);
+  }
+}
+
+function beep(freq, dur, gain, when = audio?.currentTime ?? 0) {
+  if (!audio || audio.state !== "running") return;
+  const osc = audio.createOscillator();
+  const g = audio.createGain();
+  osc.type = "sine";
+  osc.frequency.value = freq;
+  g.gain.setValueAtTime(0.0001, when);
+  g.gain.exponentialRampToValueAtTime(gain, when + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+  osc.connect(g);
+  g.connect(audio.destination);
+  osc.start(when);
+  osc.stop(when + dur);
+}
+
+function createBeatmapFromAudio(buffer) {
+  const mono = mixToMono(buffer);
+  const sampleRate = buffer.sampleRate;
+  const windowSize = Math.max(1024, Math.floor(sampleRate * 0.05));
+  const energies = [];
+  for (let start = 0; start < mono.length; start += windowSize) {
+    let sum = 0;
+    const end = Math.min(start + windowSize, mono.length);
+    for (let i = start; i < end; i += 1) sum += mono[i] * mono[i];
+    energies.push(Math.sqrt(sum / Math.max(1, end - start)));
+  }
+
+  const avg = energies.reduce((a, b) => a + b, 0) / Math.max(1, energies.length);
+  const threshold = Math.max(avg * 1.45, 0.025);
+  const minGapWindows = Math.max(3, Math.round(0.22 / (windowSize / sampleRate)));
+  const peaks = [];
+  let lastPeakIndex = -minGapWindows;
+
+  for (let i = 1; i < energies.length - 1; i += 1) {
+    const current = energies[i];
+    if (current < threshold) continue;
+    if (current < energies[i - 1] || current < energies[i + 1]) continue;
+    if (i - lastPeakIndex < minGapWindows) continue;
+    peaks.push(i);
+    lastPeakIndex = i;
+  }
+
+  const lanePattern = ["LEFT", "UP", "DOWN", "RIGHT", "FIST", "LEFT", "RIGHT", "V_SIGN", "UP", "DOWN", "THUMBS_UP"];
+  const baseOffset = 600;
+  let chosenPeaks = peaks.slice(0, 72);
+  if (chosenPeaks.length < 12) {
+    chosenPeaks = [];
+    const gap = Math.max(0.38, buffer.duration / 20);
+    for (let t = 0.9; t < buffer.duration - 0.5; t += gap) {
+      chosenPeaks.push(Math.floor((t * sampleRate) / windowSize));
     }
-
-    audioContext = new AudioContextCtor();
   }
 
-  return audioContext;
+  return chosenPeaks.map((peak, index) => {
+    const timeSeconds = (peak * windowSize) / sampleRate;
+    return makeNote(`upload-${index}`, lanePattern[index % lanePattern.length], baseOffset + timeSeconds * 1000);
+  });
 }
 
-function playToneSequence(frequencies, durationSeconds) {
-  const context = ensureAudioContext();
-  if (!context || context.state !== "running") {
+function mixToMono(buffer) {
+  const mono = new Float32Array(buffer.length);
+  const channels = buffer.numberOfChannels;
+  for (let channel = 0; channel < channels; channel += 1) {
+    const data = buffer.getChannelData(channel);
+    for (let i = 0; i < buffer.length; i += 1) mono[i] += data[i] / channels;
+  }
+  return mono;
+}
+
+function setupCamera() {
+  if (!window.Hands || !window.Camera || !navigator.mediaDevices) {
+    cameraBtn.disabled = true;
+    cameraStatusEl.textContent = "이 브라우저에서는 손 추적을 사용할 수 없습니다.";
     return;
   }
+  cameraBtn.addEventListener("click", () => startCamera().catch(() => { cameraStatusEl.textContent = "카메라 권한을 확인해 주세요."; }));
+  cameraSel.addEventListener("change", () => {
+    selectedDeviceId = cameraSel.value;
+    if (selectedDeviceId) startCamera({ force: true }).catch(() => {});
+  });
+  refreshBtn.addEventListener("click", () => refreshDevices({ ask: true }).catch(() => {}));
+  navigator.mediaDevices.addEventListener?.("devicechange", () => refreshDevices().catch(() => {}));
+  startCamera().catch(() => { cameraStatusEl.textContent = "자동 카메라 시작이 차단되었습니다."; });
+}
 
-  let startTime = context.currentTime;
-  for (const frequency of frequencies) {
-    const oscillator = context.createOscillator();
-    const gainNode = context.createGain();
-    oscillator.type = "sine";
-    oscillator.frequency.value = frequency;
-    gainNode.gain.setValueAtTime(0.0001, startTime);
-    gainNode.gain.exponentialRampToValueAtTime(0.08, startTime + 0.01);
-    gainNode.gain.exponentialRampToValueAtTime(0.0001, startTime + durationSeconds);
-    oscillator.connect(gainNode);
-    gainNode.connect(context.destination);
-    oscillator.start(startTime);
-    oscillator.stop(startTime + durationSeconds);
-    startTime += durationSeconds + 0.03;
+async function startCamera(options = {}) {
+  if (cameraController && !options.force) return;
+  await stopCamera();
+  cameraBtn.disabled = true;
+  if (!hands) hands = makeHands(overlayCanvas.getContext("2d"));
+  media = await getCameraStream();
+  cameraEl.srcObject = media;
+  await cameraEl.play();
+  cameraController = new window.Camera(cameraEl, {
+    onFrame: async () => hands.send({ image: cameraEl }),
+  });
+  await cameraController.start();
+  await refreshDevices();
+  cameraBtn.disabled = false;
+  cameraBtn.textContent = "카메라 연결됨";
+  cameraStatusEl.textContent = `${currentCameraLabel()}로 손 입력 추적 중`;
+}
+
+function makeHands(ctx) {
+  const h = new window.Hands({
+    locateFile(file) {
+      return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+    },
+  });
+  h.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.6 });
+  h.onResults((results) => {
+    syncCanvas(results.image);
+    drawHands(ctx, results);
+    onHands(results);
+  });
+  return h;
+}
+
+function syncCanvas(src) {
+  const w = src.videoWidth ?? src.width;
+  const h = src.videoHeight ?? src.height;
+  if (!w || !h) return;
+  if (overlayCanvas.width !== w || overlayCanvas.height !== h) {
+    overlayCanvas.width = w;
+    overlayCanvas.height = h;
   }
 }
 
-function vibrate(pattern) {
-  if (navigator.vibrate) {
-    navigator.vibrate(pattern);
+function drawHands(ctx, results) {
+  ctx.save();
+  ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+  for (const lm of results.multiHandLandmarks ?? []) {
+    window.drawConnectors(ctx, lm, window.HAND_CONNECTIONS, { color: "#7ce6ff", lineWidth: 4 });
+    window.drawLandmarks(ctx, lm, { color: "#fff5a8", lineWidth: 1, radius: 4 });
   }
+  ctx.restore();
 }
 
-function formatHandedness(label) {
-  if (label === "Left") {
-    return "왼손";
-  }
-
-  if (label === "Right") {
-    return "오른손";
-  }
-
-  return "손 정보 확인 중";
-}
-
-function isMobileDevice() {
-  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-}
-
-function togglePause() {
-  if (!hasStarted) {
-    cameraStatusElement.textContent = "게임 시작 전입니다. 엄지척으로 먼저 시작해 주세요.";
+function onHands(results) {
+  const lm = results.multiHandLandmarks?.[0];
+  if (!lm) {
+    gestureEl.textContent = LABELS.WAITING;
+    lastCameraGesture = "";
     return;
   }
-
-  if (state.isGameOver) {
-    cameraStatusElement.textContent = "게임 오버 상태에서는 엄지척으로 다시 시작해 주세요.";
-    return;
-  }
-
-  if (isPaused) {
-    beginResumeCountdown();
-    return;
-  }
-
-  stopCountdown();
-  isPaused = true;
-  render(state);
-  cameraStatusElement.textContent = isTurboActive()
-    ? "주먹을 인식해 일시정지했습니다. 현재 부스트 모드가 켜져 있습니다."
-    : "주먹을 인식해 일시정지했습니다.";
-  stopLoop();
-  playToneSequence([320], 0.12);
-  vibrate([60]);
+  const raw = classify(lm);
+  const stable = stableGesture(raw);
+  if (!stable || stable === "WAITING") return;
+  const now = performance.now();
+  if (stable === lastCameraGesture && now - lastCameraGestureAt < CAMERA_COOLDOWN) return;
+  lastCameraGesture = stable;
+  lastCameraGestureAt = now;
+  registerInput(stable, "camera");
 }
 
-function toggleBoostMode() {
-  if (!hasStarted) {
-    cameraStatusElement.textContent = "게임 시작 전입니다. 엄지척으로 먼저 시작해 주세요.";
-    return;
-  }
-
-  manualTurboEnabled = !manualTurboEnabled;
-  render(state);
-
-  if (!isPaused && !state.isGameOver) {
-    startLoop();
-  }
-
-  cameraStatusElement.textContent = isTurboActive()
-    ? "브이를 인식해 부스트 모드를 켰습니다. 먹이를 먹으면 20점을 얻습니다."
-    : "브이를 인식해 일반 모드로 전환했습니다. 먹이는 다시 10점입니다.";
-  bonusStatusElement.textContent = isTurboActive() ? "부스트 활성화" : "기본 속도";
-  playToneSequence(isTurboActive() ? [760, 920] : [420], 0.08);
-  vibrate(isTurboActive() ? [35, 15, 35] : [30]);
+function stableGesture(next) {
+  gestureHistory.push(next);
+  if (gestureHistory.length > STABLE) gestureHistory.shift();
+  if (gestureHistory.length < STABLE) return null;
+  return gestureHistory.every((v) => v === next) ? next : null;
 }
 
-function handleThumbsUp() {
-  if (!hasStarted || state.isGameOver) {
-    startGameFromStandby();
-    return;
-  }
-
-  cameraStatusElement.textContent = "엄지척은 시작 대기 화면이나 게임 오버 상태에서 재시작할 때 사용합니다.";
+function classify(lm) {
+  const palm = palmSize(lm);
+  const fingers = fingerStates(lm, palm);
+  if (!fingers.thumb && !fingers.index && !fingers.middle && !fingers.ring && !fingers.pinky) return "FIST";
+  if (!fingers.thumb && fingers.index && fingers.middle && !fingers.ring && !fingers.pinky && Math.abs(lm[8].x - lm[12].x) > 0.05) return "V_SIGN";
+  if (fingers.thumb && !fingers.index && !fingers.middle && !fingers.ring && !fingers.pinky && lm[4].y < lm[2].y - palm * 0.15) return "THUMBS_UP";
+  return detectDir(lm, palm);
 }
 
-function getTickMs() {
-  return isTurboActive() ? TURBO_TICK_MS : TICK_MS;
+function detectDir(lm, palm = palmSize(lm)) {
+  const wrist = lm[0];
+  const tip = lm[8];
+  const dx = tip.x - wrist.x;
+  const dy = tip.y - wrist.y;
+  if (dist(tip, wrist) / palm < 1.1) return "WAITING";
+  if (Math.abs(dx) > Math.abs(dy) * 0.9) return dx > 0 ? "RIGHT" : "LEFT";
+  return dy > 0 ? "DOWN" : "UP";
 }
 
-function getModeStatusMessage() {
-  if (!hasStarted) {
-    return "엄지척 또는 Enter를 누르면 게임이 시작됩니다.";
-  }
-
-  if (isPaused) {
-    return isTurboActive() ? "일시정지 중입니다. 현재 부스트 모드가 켜져 있습니다." : "일시정지 중입니다.";
-  }
-
-  if (isTurboActive()) {
-    return "손이 보이면 방향을 인식합니다. 현재 부스트 모드이며 먹이는 20점입니다.";
-  }
-
-  return "손이 보이면 방향을 인식합니다. 검지 방향을 크게 움직여 보세요.";
-}
-
-function beginResumeCountdown() {
-  stopCountdown();
-  let count = 3;
-  overlayMessageElement.textContent = `${count}초 후 재개`;
-  overlayElement.hidden = false;
-  cameraStatusElement.textContent = "주먹을 다시 인식해 3초 카운트다운을 시작했습니다.";
-
-  countdownTimeoutId = window.setInterval(() => {
-    count -= 1;
-
-    if (count > 0) {
-      overlayMessageElement.textContent = `${count}초 후 재개`;
-      return;
-    }
-
-    stopCountdown();
-    isPaused = false;
-    render(state);
-    startLoop();
-    cameraStatusElement.textContent = isTurboActive()
-      ? "카운트다운이 끝나 게임을 재개했습니다. 현재 부스트 모드입니다."
-      : "카운트다운이 끝나 게임을 재개했습니다.";
-    playToneSequence([520, 620, 720], 0.06);
-    vibrate([30, 20, 30, 20, 50]);
-  }, 1000);
-}
-
-function stopCountdown() {
-  if (countdownTimeoutId !== null) {
-    window.clearInterval(countdownTimeoutId);
-    countdownTimeoutId = null;
-  }
-}
-
-function applyRpsBonus(result, statusMessage) {
-  if (!hasStarted || state.isGameOver || result === "DRAW") {
-    bonusStatusElement.textContent = result === "DRAW" ? "보너스 없음: 비김" : "보너스 대기 중";
-    if (result === "DRAW") {
-      playToneSequence([380, 380], 0.05);
-      vibrate([25, 20, 25]);
-    }
-    return;
-  }
-
-  state = {
-    ...state,
-    score: state.score + RPS_WIN_BONUS_SCORE,
+function fingerStates(lm, palm) {
+  return {
+    thumb: thumbExtended(lm, palm),
+    index: fingerExtended(lm, 5, 6, 8, palm),
+    middle: fingerExtended(lm, 9, 10, 12, palm),
+    ring: fingerExtended(lm, 13, 14, 16, palm),
+    pinky: fingerExtended(lm, 17, 18, 20, palm),
   };
-  bonusTurboEnabled = true;
-  scheduleTurboBonusEnd();
-  render(state);
-  if (!isPaused) {
-    startLoop();
+}
+
+function fingerExtended(lm, mcpI, pipI, tipI, palm) {
+  const mcp = lm[mcpI];
+  const pip = lm[pipI];
+  const tip = lm[tipI];
+  return dist(tip, mcp) / palm > Math.max(0.72, (dist(pip, mcp) / palm) * 1.18);
+}
+
+function thumbExtended(lm, palm) {
+  return dist(lm[4], lm[2]) / palm > Math.max(0.55, (dist(lm[3], lm[2]) / palm) * 1.14);
+}
+
+function palmSize(lm) {
+  return Math.max((dist(lm[0], lm[5]) + dist(lm[0], lm[17]) + dist(lm[5], lm[17])) / 3, 0.08);
+}
+
+function dist(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+async function getCameraStream() {
+  const video = selectedDeviceId
+    ? { deviceId: { exact: selectedDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+    : { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ? "user" : undefined };
+  const stream = await navigator.mediaDevices.getUserMedia({ video, audio: false });
+  const settings = stream.getVideoTracks()[0]?.getSettings?.() ?? {};
+  if (settings.deviceId) selectedDeviceId = settings.deviceId;
+  return stream;
+}
+
+async function stopCamera() {
+  if (cameraController?.stop) await cameraController.stop();
+  cameraController = null;
+  if (media) media.getTracks().forEach((t) => t.stop());
+  media = null;
+  cameraEl.srcObject = null;
+}
+
+async function refreshDevices(options = {}) {
+  if (!navigator.mediaDevices?.enumerateDevices) return fillDevices([]);
+  if (options.ask && !media) {
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      s.getTracks().forEach((t) => t.stop());
+    } catch {}
   }
-
-  bonusStatusElement.textContent = `가위바위보 승리 보너스: +${RPS_WIN_BONUS_SCORE}점, ${RPS_BONUS_TURBO_MS / 1000}초 부스트`;
-  cameraStatusElement.textContent = `${statusMessage} 보너스 점수와 부스트를 적용했습니다.`;
-  playToneSequence([660, 880, 1040], 0.07);
-  vibrate([45, 20, 45, 20, 70]);
+  devices = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput");
+  if (!selectedDeviceId) selectedDeviceId = preferredCamera(devices)?.deviceId ?? "";
+  fillDevices(devices);
 }
 
-function scheduleTurboBonusEnd() {
-  stopTurboBonus();
-  turboTimeoutId = window.setTimeout(() => {
-    turboTimeoutId = null;
-    if (!bonusTurboEnabled) {
-      return;
-    }
-
-    bonusTurboEnabled = false;
-    bonusStatusElement.textContent = "가위바위보 보너스 종료";
-    if (!isPaused && hasStarted && !state.isGameOver) {
-      startLoop();
-    }
-    playToneSequence([360, 300], 0.06);
-  }, RPS_BONUS_TURBO_MS);
-}
-
-function stopTurboBonus() {
-  if (turboTimeoutId !== null) {
-    window.clearTimeout(turboTimeoutId);
-    turboTimeoutId = null;
+function fillDevices(list) {
+  cameraSel.replaceChildren();
+  if (!list.length) {
+    const o = document.createElement("option");
+    o.value = "";
+    o.textContent = "사용 가능한 카메라 없음";
+    cameraSel.appendChild(o);
+    cameraSel.disabled = true;
+    return;
   }
+  cameraSel.disabled = false;
+  list.forEach((d, i) => {
+    const o = document.createElement("option");
+    o.value = d.deviceId;
+    o.textContent = d.label || `카메라 ${i + 1}`;
+    cameraSel.appendChild(o);
+  });
+  if (!list.some((d) => d.deviceId === selectedDeviceId)) selectedDeviceId = preferredCamera(list)?.deviceId ?? list[0].deviceId;
+  cameraSel.value = selectedDeviceId;
 }
 
-function isTurboActive() {
-  return manualTurboEnabled || bonusTurboEnabled;
+function preferredCamera(list) {
+  const p = [/camo/i, /iphone/i, /ios/i, /continuity/i, /epoccam/i];
+  return list.find((d) => p.some((re) => re.test(d.label))) ?? list.find((d) => /front|facetime/i.test(d.label)) ?? list[0] ?? null;
+}
+
+function currentCameraLabel() {
+  return devices.find((d) => d.deviceId === selectedDeviceId)?.label ?? preferredCamera(devices)?.label ?? "선택한 카메라";
+}
+
+function formatLane(lane) {
+  return lane === "V_SIGN" ? "V" : lane === "THUMBS_UP" ? "THUMB" : lane;
+}
+
+function clamp(v, min, max) {
+  return Math.min(Math.max(v, min), max);
 }

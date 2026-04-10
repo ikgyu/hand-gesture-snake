@@ -1,15 +1,21 @@
-# Hand Gesture Snake
+# Nebula Beat Rift
 
-Camera-based hand gesture web game with a cinematic SF interface.
+SF mood hand-gesture rhythm game for the browser.
 
-## Run
+## Play
 
-Open `index.html` in a browser over HTTPS or a local server and allow camera access.
+Open `index.html` over HTTPS or a local server, allow camera access, and start the stage.
 
-## Controls
+## Inputs
 
-- Direction gestures control the snake
-- Fist pauses the game
-- V sign toggles boost
-- Thumbs up starts or restarts
-- Two hands trigger rock-paper-scissors bonus mode
+- Direction notes: tilt your hand left, up, down, or right
+- Gesture notes: use fist, V sign, and thumbs up
+- Keyboard fallback: arrow keys plus `Z`, `X`, `C`
+- Music upload: choose an audio file to auto-generate a beatmap from detected peaks
+- Sample mode: play immediately with the built-in sample beat and note pattern
+
+## Tech
+
+- MediaPipe Hands for camera tracking
+- Web Audio API for playback and timing feedback
+- Static HTML/CSS/JS, ready for GitHub Pages deployment
